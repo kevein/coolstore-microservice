@@ -262,29 +262,6 @@ function print_info() {
   fi
 }
 
-# waits while the condition is true until it becomes false or it times out
-function wait_while_empty() {
-  local _NAME=$1
-  local _TIMEOUT=$(($2/5))
-  local _CONDITION=$3
-
-  echo "Waiting for $_NAME to be ready..."
-  local x=1
-  while [ -z "$(eval ${_CONDITION})" ]
-  do
-    echo "."
-    sleep 5
-    x=$(( $x + 1 ))
-    if [ $x -gt $_TIMEOUT ]
-    then
-      echo "$_NAME still not ready, I GIVE UP!"
-      exit 255
-    fi
-  done
-
-  echo "$_NAME is ready."
-}
-
 function remove_storage_claim() {
   local _DC=$1
   local _VOLUME_NAME=$2
@@ -381,7 +358,7 @@ function deploy_nexus() {
 # Wait till Nexus is ready
 function wait_for_nexus_to_be_ready() {
   if [ -z "$ARG_MAVEN_MIRROR_URL" ] ; then # no maven mirror specified
-    wait_while_empty "Nexus" 600 "oc get ep nexus -o yaml -n ${PRJ_CI[0]} | grep '\- addresses:'"
+    oc rollout status dc nexus -n ${PRJ_CI[0]}
   fi
 }
 
@@ -404,8 +381,8 @@ function deploy_gogs() {
   sleep 5
 
   # wait for Gogs to be ready
-  wait_while_empty "Gogs PostgreSQL" 600 "oc get ep gogs-postgresql -o yaml -n ${PRJ_CI[0]} | grep '\- addresses:'"
-  wait_while_empty "Gogs" 600 "oc get ep gogs -o yaml -n ${PRJ_CI[0]} | grep '\- addresses:'"
+  oc rollout status dc gogs-postgresql -n ${PRJ_CI[0]}
+  oc rollout status dc gogs -n ${PRJ_CI[0]}
 
   sleep 10
 
@@ -475,7 +452,14 @@ EOM
 # Deploy Jenkins
 function deploy_jenkins() {
   echo_header "Deploying Jenkins..."
-  oc new-app jenkins-ephemeral -l app=jenkins -p MEMORY_LIMIT=1Gi -n ${PRJ_CI[0]}
+
+  # import jenkins image tags
+  if [ $LOGGEDIN_USER == 'system:admin' ] ; then
+    oc import-image jenkins:v3.7 --from="registry.access.redhat.com/openshift3/jenkins-2-rhel7" --confirm -n openshift 2>/dev/null
+    sleep 10
+  fi
+  
+  oc new-app jenkins-ephemeral -l app=jenkins -p MEMORY_LIMIT=1Gi --param=JENKINS_IMAGE_STREAM_TAG=jenkins:v3.7 -n ${PRJ_CI[0]}
   sleep 2
   oc set resources dc/jenkins --limits=cpu=1,memory=2Gi --requests=cpu=200m,memory=1Gi -n ${PRJ_CI[0]}
 }
@@ -596,27 +580,7 @@ function build_images() {
   # build images
   for buildconfig in web-ui inventory cart catalog coolstore-gw pricing rating review
   do
-    oc start-build $buildconfig -n ${PRJ_COOLSTORE_PROD[0]}
-    wait_while_empty "$buildconfig build" 180 "oc get builds -n ${PRJ_COOLSTORE_PROD[0]} | grep $buildconfig | grep Running"
-    sleep 10
-  done
-}
-
-function wait_for_builds_to_complete() {
-  # wait for builds
-  for buildconfig in coolstore-gw web-ui inventory cart catalog pricing rating review
-  do
-    wait_while_empty "$buildconfig image" 600 "oc get builds -n ${PRJ_COOLSTORE_PROD[0]} | grep $buildconfig | grep -v Running"
-    sleep 10
-  done
-
-  # verify successful builds
-  for buildconfig in coolstore-gw web-ui inventory cart catalog pricing
-  do
-    if [ -z "$(oc get builds -n ${PRJ_COOLSTORE_PROD[0]} | grep $buildconfig | grep Complete)" ]; then
-      echo "ERROR: Build $buildconfig did not complete successfully"
-      exit 255
-    fi
+    oc start-build $buildconfig -n ${PRJ_COOLSTORE_PROD[0]} --wait
   done
 }
 
@@ -906,10 +870,13 @@ case "$ARG_COMMAND" in
 
           deploy_service_dev_env
 
+<<<<<<< HEAD
           if ! images_exists; then
             wait_for_builds_to_complete
           fi
 
+=======
+>>>>>>> 94fe3a7d7d455f1aa7334025167389de46a083d7
           promote_images
         fi
 
